@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Tiempo por ciudad · Docker + Open-Meteo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+    body { margin: 0; padding: 24px; background: #f7f7fb; }
+    .card { max-width: 1100px; margin: 0 auto 24px; background: #fff; border-radius: 14px; box-shadow: 0 8px 30px rgba(0,0,0,.05); padding: 18px 20px; }
+    h1 { margin: 0 0 12px; font-size: 22px; }
+    .row { display: grid; gap: 16px; grid-template-columns: 1fr; }
+    @media(min-width: 900px){ .row{ grid-template-columns: 1fr 1fr; } }
+    .controls { display:flex; gap:10px; flex-wrap:wrap; }
+    input, button { font-size: 16px; padding: 10px 12px; border-radius: 10px; border: 1px solid #e3e3ee; }
+    button { cursor: pointer; background:#111827; color:#fff; border:none; }
+    .muted { color:#6b7280; font-size: 14px; }
+    .pill { display:inline-block; background:#f1f5f9; padding:4px 10px; border-radius:999px; margin-left:8px; font-size:12px; }
+    canvas { background:#fff; border-radius:12px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Tiempo por ciudad <span class="pill">Docker + Open-Meteo</span></h1>
+    <div class="controls">
+      <input id="city" type="text" placeholder="Ej: Madrid, Barcelona, Sevilla…" style="flex:1" />
+      <button id="btn">Buscar</button>
+      <button id="btnMadrid" title="Atajo">Madrid</button>
+      <button id="btnBarcelona" title="Atajo">Barcelona</button>
+      <button id="btnSevilla" title="Atajo">Sevilla</button>
+    </div>
+    <p class="muted" id="status">Escribe una ciudad y pulsa “Buscar”.</p>
+  </div>
+
+  <div class="card">
+    <h2 style="margin:0 0 8px">Temperatura (hora a hora)</h2>
+    <canvas id="tempChart" height="120"></canvas>
+  </div>
+
+  <div class="row">
+    <div class="card">
+      <h2 style="margin:0 0 8px">Precipitación (mm)</h2>
+      <canvas id="precChart" height="160"></canvas>
+    </div>
+    <div class="card">
+      <h2 style="margin:0 0 8px">Nubosidad (%)</h2>
+      <canvas id="cloudChart" height="160"></canvas>
+    </div>
+  </div>
+
+  <script>
+    const statusEl = document.getElementById('status');
+    const btn = document.getElementById('btn');
+    const cityInput = document.getElementById('city');
+    const btnMadrid = document.getElementById('btnMadrid');
+    const btnBarcelona = document.getElementById('btnBarcelona');
+    const btnSevilla = document.getElementById('btnSevilla');
+
+    let tempChart, precChart, cloudChart;
+    function setStatus(msg){ statusEl.textContent = msg; }
+
+    async function geocodeCity(name){
+      const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(name)}&count=1&language=es&format=json`;
+      const res = await fetch(url);
+      if(!res.ok) throw new Error('Error geocodificando la ciudad');
+      const data = await res.json();
+      if(!data.results || !data.results.length) throw new Error('No se encontró esa ciudad');
+      const { latitude, longitude, name: n, country, timezone } = data.results[0];
+      return { lat: latitude, lon: longitude, label: `${n}${country ? ', '+country:''}`, tz: timezone };
+    }
+
+    async function fetchWeather(lat, lon, tz){
+      const hourly = ['temperature_2m','precipitation','cloudcover'];
+      const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&hourly=${hourly.join(',')}&forecast_days=2&timezone=${encodeURIComponent(tz)}`;
+      const res = await fetch(url);
+      if(!res.ok) throw new Error('Error consultando Open-Meteo');
+      return await res.json();
+    }
+
+    function renderCharts(weather, label){
+      const h = weather.hourly;
+      const labels = h.time.map(t => t.replace('T',' ').slice(5,16));
+      const temps = h.temperature_2m;
+      const precs = h.precipitation;
+      const clouds = h.cloudcover;
+      [tempChart, precChart, cloudChart].forEach(c => c && c.destroy());
+
+      tempChart = new Chart(document.getElementById('tempChart'), {
+        type: 'line',
+        data: { labels, datasets: [{ label: `Temp (°C) · ${label}`, data: temps, tension: 0.3, fill: false }] },
+        options: { responsive:true, scales:{ y:{ title:{ display:true, text:'°C' } } } }
+      });
+      precChart = new Chart(document.getElementById('precChart'), {
+        type: 'bar',
+        data: { labels, datasets: [{ label: `Precipitación (mm) · ${label}`, data: precs }] },
+        options: { responsive:true, scales:{ y:{ title:{ display:true, text:'mm' } } } }
+      });
+      cloudChart = new Chart(document.getElementById('cloudChart'), {
+        type: 'line',
+        data: { labels, datasets: [{ label: `Nubosidad (%) · ${label}`, data: clouds, tension: 0.3 }] },
+        options: { responsive:true, scales:{ y:{ min:0, max:100, title:{ display:true, text:'%' } } } }
+      });
+    }
+
+    async function run(cityName){
+      try{
+        setStatus('Buscando ciudad…');
+        const { lat, lon, label, tz } = await geocodeCity(cityName);
+        setStatus(`Ciudad: ${label} · lat ${lat.toFixed(2)}, lon ${lon.toFixed(2)} · zona: ${tz}. Cargando datos…`);
+        const weather = await fetchWeather(lat, lon, tz);
+        renderCharts(weather, label);
+        setStatus(`Mostrando pronóstico horario (48h) para ${label}. Fuente: Open-Meteo.`);
+      }catch(e){ setStatus(`⚠️ ${e.message}`); }
+    }
+
+    btn.addEventListener('click', () => { const q = cityInput.value.trim(); if(q) run(q); else setStatus('Escribe una ciudad.'); });
+    [btnMadrid, btnBarcelona, btnSevilla].forEach(b => b.addEventListener('click', () => run(b.textContent)));
+    cityInput.addEventListener('keydown', e => { if(e.key === 'Enter') btn.click(); });
+
+    run('Madrid');
+  </script>
+</body>
+</html>
